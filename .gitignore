@@ -1,0 +1,4 @@
+build/
+*.swp
+*.mod
+*.DS_Store
