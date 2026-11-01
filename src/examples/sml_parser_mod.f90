@@ -6,7 +6,7 @@ module sml_parser_mod
    implicit none (type, external)
 
    ! Full parser
-   type(left_parser), target        :: sml_parser
+   type(right_parser), target       :: sml_parser
    type(left_parser), target        :: sml_topdec_parser
 
    ! Common helpers
@@ -50,7 +50,7 @@ module sml_parser_mod
    ! Expression types
    type(tag_parser), target         :: sml_pat_parser
    type(or_parser), target          :: sml_ty_parser
-   type(or_parser), target          :: sml_exp_parser
+   type(error_parser), target          :: sml_exp_parser
 
    ! Pattern expressions
    type(or_parser), target          :: sml_patrow_parser
@@ -70,7 +70,7 @@ module sml_parser_mod
    type(chain_parser), target       :: sml_expseq_parser
    type(chain_parser), target       :: sml_explst_parser
    type(chain_parser), target       :: sml_exprow_parser
-   type(or_parser), target          :: sml_atexp_parser
+   type(error_parser), target          :: sml_atexp_parser
    type(or_parser), target          :: sml_appexp_parser
    type(or_parser), target          :: sml_tyexp_parser
    type(lassoc_parser), target      :: sml_andexp_parser
@@ -97,7 +97,7 @@ module sml_parser_mod
    type(or_parser), target          :: sml_spec_parser
    type(or_parser), target          :: sml_sharing_spec_parser
    type(repitition_parser), target  :: sml_specs_parser
-   type(right_parser), target       :: sml_sigdec_parser
+   type(chain_parser), target       :: sml_sigdec_parser
    type(tag_parser), target         :: sml_sigbind_parser
    type(chain_parser), target       :: sml_sigexp_parser
    type(or_parser), target          :: sml_sigexp_sig_parser
@@ -106,14 +106,14 @@ module sml_parser_mod
    ! Structures
    type(or_parser), target          :: sml_sigconstraint_parser
    type(or_parser), target          :: sml_functorarg_parser
-   type(or_parser), target          :: sml_atstrexp_parser
+   type(error_parser), target       :: sml_atstrexp_parser
    type(lassoc_parser), target      :: sml_strexp_parser
    type(or_parser), target          :: sml_strdec_parser
    type(repitition_parser), target  :: sml_strdecs_parser
    type(tag_parser), target         :: sml_strbind_parser
    type(tag_parser), target         :: sml_functorparam_parser
    type(tag_parser), target         :: sml_funbind_parser
-   type(right_parser), target       :: sml_fundec_parser
+   type(chain_parser), target       :: sml_fundec_parser
 
 contains
    subroutine sml_build()
@@ -292,7 +292,7 @@ contains
          ((t('[') > .opt.sml_expseq_parser) < t(']') .tag. 'list') .or. &
          ((t('(') > .opt.sml_explst_parser) < t(')') .tag. 'sequence') .or. &
          ((w('let') > .ref.sml_decs_parser .tag. 'decs') ** &
-            (w('in') > sml_explst_parser .tag. 'exps') < w('end') .tag. 'let')
+            (w('in') > sml_explst_parser .tag. 'exps') < w('end') .tag. 'let') .error. 'Invalid expression'
       sml_appexp_parser = &
          (sml_atexp_parser ** .oneplus.(sml_atexp_parser) .tag. 'appexp') .or. &
          sml_atexp_parser
@@ -323,7 +323,7 @@ contains
             (w('then') > .ref.sml_exp_parser) ** &
             (w('else') > .ref.sml_exp_parser) .tag. 'if' &
          ) .or. &
-         (w('raise') > .ref.sml_exp_parser .tag. 'raise')
+         (w('raise') > .ref.sml_exp_parser .tag. 'raise') .error. 'Invalid expression'
 
       ! Declarations
       sml_tyvarseq_parser = &
@@ -411,7 +411,7 @@ contains
       sml_sigbind_parser = &
          sml_strid_parser ** (s('=') > .ref.sml_sigexp_parser) .tag. 'sig-bind'
       sml_sigdec_parser = &
-         w('signature') > (sml_sigbind_parser .sepby. w('and'))
+         (sml_sigbind_parser .sepby. w('and'))
       
       ! Structures
       sml_sigconstraint_parser = &
@@ -425,7 +425,7 @@ contains
          (sml_strid_parser ** (t('(') > sml_functorarg_parser) < t(')') .tag. 'functor-call') .or. &
          sml_longstrid_parser .or. &
          ((w('let') > .ref.sml_strdecs_parser .tag. 'let-strdecs') > &
-            ((w('in') > .ref.sml_strexp_parser) > w('end') .tag. 'let-strexp') .tag. 'let-struct')
+            ((w('in') > .ref.sml_strexp_parser) > w('end') .tag. 'let-strexp') .tag. 'let-struct') .error. 'Invalid struct'
       sml_strexp_parser = &
          sml_atstrexp_parser ** .rep.sml_sigconstraint_parser .lassoc. 'ascribed-struct'
       sml_strbind_parser = &
@@ -443,17 +443,16 @@ contains
          sml_strid_parser ** ((t('(') > sml_functorparam_parser) < t(')')) ** .opt.sml_sigconstraint_parser ** &
             (s('=') > sml_strexp_parser) .tag. 'functor-bind'
       sml_fundec_parser = &
-         w('functor') > (sml_funbind_parser .sepby. w('and'))
+         (sml_funbind_parser .sepby. w('and'))
 
       ! Full parsers
-      sml_topdec_parser = ( &
-         sml_sigdec_parser .or. &
-         sml_strdec_parser .or. &
-         sml_fundec_parser) < .opt.t(';')
-      sml_parser = (opt_ws > ( &
-         .rep.(sml_topdec_parser .or. &
-         sml_exp_parser < (t(';') .or. eof_parser())) &
-      )) < eof_parser()
+      sml_topdec_parser = &
+         sml_strdec_parser < .opt.t(';')
+      sml_parser = opt_ws > ( &
+         tern(w('signature'), sml_sigdec_parser < .opt.t(';'), &
+         tern(w('functor'), sml_fundec_parser < .opt.t(';'), &
+         sml_topdec_parser .or. .ref.sml_exp_parser < (t(';') .or. eof_parser()) &
+      )) .until. eof_parser())
 
    end subroutine
 

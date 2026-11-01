@@ -111,6 +111,10 @@ module parscomb_mod
       procedure :: parser_lassoc_binary
    end interface
 
+   interface operator(.until.)
+      procedure :: parser_until
+   end interface
+
    type :: pair
       class(*), allocatable :: a
       class(*), allocatable :: b
@@ -241,6 +245,21 @@ module parscomb_mod
       procedure :: run => run_lookahead_parser
    end type
 
+   type, extends(parser) :: ternary_parser
+      class(parser), allocatable :: test_parser
+      class(parser), allocatable :: if_parser
+      class(parser), allocatable :: else_parser
+   contains
+      procedure :: run => run_ternary_parser
+   end type
+
+   type, extends(parser) :: until_parser
+      class(parser), allocatable :: repeated_parser
+      class(parser), allocatable :: end_parser
+   contains
+      procedure :: run => run_until_parser
+   end type
+
    abstract interface
       subroutine map_input(a)
          class(*), allocatable, intent(inout) :: a
@@ -338,7 +357,7 @@ contains
    end function
 
    function parser_copy(x, a) result(result)
-      integer, value :: x
+      integer, value, intent(in) :: x
       class(parser), intent(in) :: a
       type(copy_parser) :: result
       result = copy_parser(x, a)
@@ -381,6 +400,18 @@ contains
       character(*), intent(in) :: t
       type(lassoc_parser) :: result
       result = lassoc_parser(input, t)
+   end function
+
+   function parser_until(rep, end) result(result)
+      class(parser), intent(in) :: rep, end
+      type(until_parser) :: result
+      result = until_parser(rep, end)
+   end function
+
+   function tern(a, b, c) result(result)
+      class(parser), intent(in) :: a, b, c
+      type(ternary_parser) :: result
+      result = ternary_parser(a, b, c)
    end function
 
    recursive function run_char_parser(this, stream) result(result)   
@@ -578,8 +609,8 @@ contains
                return
             end if
          end do
+         result = parse_success(this%str, stream(len(this%str) + 1:), len(this%str))
       end select
-      result = parse_success(this%str, stream(len(this%str) + 1:), len(this%str))
    end function
 
    recursive function run_predicate_parser(this, stream) result(result)
@@ -674,7 +705,6 @@ contains
       class(*), target, intent(in) :: stream(:)
       class(parse_result), allocatable :: result
 
-      type(parse_success), allocatable :: true_result
       class(parse_result), allocatable :: result1, result2
 
       if (.not.allocated(this%a) .or. .not.allocated(this%b)) then
@@ -688,9 +718,8 @@ contains
          result2 = this%b%run(res1%remaining)
          select type (res2 => result2)
          type is (parse_success)
-            true_result = parse_success(NULL(), res2%remaining, res1%consumed + res2%consumed)
-            call move_alloc(res2%result, true_result%result)
-            call move_alloc(true_result, result)
+            res2%consumed = res2%consumed + res1%consumed
+            call move_alloc(result2, result)
          type is (parse_failure)
             res2%location = res2%location + res1%consumed
             call move_alloc(result2, result)
@@ -741,7 +770,7 @@ contains
       type(parse_success), allocatable :: true_result
       type(pair), allocatable :: result_pair
 
-      if (this%count <= 0) then
+      if (count <= 0) then
          result = parse_success(NULL(), stream, 0)
          return
       end if
@@ -849,13 +878,17 @@ contains
       type(pair), allocatable :: result_pair
 
       if (.not.allocated(this%sub_parser)) then
-         result = parse_failure('Repition parser not allocated', 1)
+         result = parse_failure('Repitition parser not allocated', 1)
          return
       end if
 
       result1 = this%sub_parser%run(stream)
       select type (res1 => result1)
       type is (parse_success)
+         if (res1%consumed == 0) then
+            result = parse_failure('Infinite recursion in repitition parser', 1)
+            return
+         end if
          result2 = this%run(res1%remaining)
          result_pair = pair()
          call move_alloc(res1%result, result_pair%a)
@@ -870,6 +903,85 @@ contains
          end select
       type is (parse_failure)
          result = parse_success(NULL(), stream, 0)
+      end select
+   end function
+
+   recursive function run_ternary_parser(this, stream) result(result)
+      class(ternary_parser), intent(in) :: this
+      class(*), target, intent(in) :: stream(:)
+      class(parse_result), allocatable :: result
+      class(parse_result), allocatable :: tmp_result
+
+      if (.not.allocated(this%test_parser)) then
+         result = parse_failure('Ternary test parser not allocated', 1)
+         return
+      end if
+
+      tmp_result = this%test_parser%run(stream)
+      select type (tmp_result)
+      type is (parse_failure)
+         if (.not.allocated(this%else_parser)) then
+            result = parse_failure('Ternary else parser not allocated', 1)
+            return
+         end if
+         result = this%else_parser%run(stream)
+      type is (parse_success)
+         if (.not.allocated(this%if_parser)) then
+            result = parse_failure('Ternary if parser not allocated', tmp_result%consumed + 1)
+            return
+         end if
+         result = this%if_parser%run(tmp_result%remaining)
+         select type (result)
+         type is (parse_success)
+            result%consumed = result%consumed + tmp_result%consumed
+         type is (parse_failure)
+            result%location = result%location + tmp_result%consumed
+         end select
+      end select
+   end function
+
+   recursive function run_until_parser(this, stream) result(result)
+      class(until_parser), intent(in) :: this
+      class(*), target, intent(in) :: stream(:)
+      class(parse_result), allocatable :: result
+
+      class(parse_result), allocatable :: tmp_result, tmp_result2, end_result
+      type(pair), allocatable :: result_pair
+      type(parse_success), allocatable :: true_result 
+
+      if (.not.allocated(this%repeated_parser) .or. .not.allocated(this%end_parser)) then
+         result = parse_failure('Until parsers not allocated', 1)
+         return
+      end if
+
+      end_result = this%end_parser%run(stream)
+      select type (end_res => end_result)
+      type is (parse_failure)
+         tmp_result = this%repeated_parser%run(stream)
+         select type (res1 => tmp_result)
+         type is (parse_success)
+            if (res1%consumed == 0) then
+               result = parse_failure('Infinite recursion in until parser', 1)
+               return
+            end if
+            result_pair = pair()
+            call move_alloc(res1%result, result_pair%a)
+            tmp_result2 = this%run(res1%remaining)
+            select type (res2 => tmp_result2)
+            type is (parse_success)
+               call move_alloc(res2%result, result_pair%b)
+               true_result = parse_success(NULL(), res2%remaining, res1%consumed + res2%consumed)
+               call move_alloc(result_pair, true_result%result)
+               call move_alloc(true_result, result)
+            type is (parse_failure)
+               res2%location = res2%location + res1%consumed
+               call move_alloc(tmp_result2, result)
+            end select
+         type is (parse_failure)
+            call move_alloc(tmp_result, result)
+         end select
+      type is (parse_success)
+         call move_alloc(end_result, result)
       end select
    end function
 end module

@@ -7,7 +7,7 @@ program main
    class(parser), pointer :: parse
    class(parse_result), allocatable :: res
    character(:), allocatable :: input_str, fname
-   character, allocatable :: input(:)
+   character, allocatable, target :: input(:)
    integer(size_t) :: fname_size
  
    print *, 'Starting parser build'
@@ -40,7 +40,10 @@ program main
       call print_sml(res%result, 0)
    type is (parse_failure)
       print *, 'unsuccessful parse'
-      print *, res%location, ': ', res%error
+      print '(A, A, I0, A, I0, A, A)', &
+         fname, ':', count(input(:res%location) == achar(10)) + 1, ':', &
+         res%location - findloc(input(:res%location), achar(10), back=.true.), ': ', &
+         res%error 
    end select
 contains
     recursive subroutine print_sml(input, indent)
